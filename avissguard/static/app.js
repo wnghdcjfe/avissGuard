@@ -8,6 +8,23 @@ const $ = (id) => document.getElementById(id);
 const CAT_ICON = { camera: "📷", glasses: "👓", earpiece: "🎧", wearable: "⌚", phone: "📱", computer: "💻", tag: "🏷️", infra: "📡", unknown: "❔" };
 const LEVEL_TEXT = { high: "경보", medium: "주의", low: "일반" };
 
+// 접속 토큰: 터미널에 출력된 URL(?token=…)로 들어오면 세션에 보관하고 주소창에서는 지운다
+const TOKEN = (() => {
+  const u = new URL(location.href);
+  let t = u.searchParams.get("token");
+  try {
+    if (t) {
+      sessionStorage.setItem("avg.token", t);
+      u.searchParams.delete("token");
+      history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } else {
+      t = sessionStorage.getItem("avg.token");
+    }
+  } catch (_) {}
+  return t || "";
+})();
+const withToken = (path) => `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}`;
+
 const state = {
   snap: null,
   alerts: [],
@@ -27,11 +44,16 @@ try {
 // ---------------------------------------------------------------- 연결
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const ws = new WebSocket(withToken(`${proto}://${location.host}/ws`));
   state.ws = ws;
   ws.onopen = () => { state.retry = 0; $("conn").classList.add("on"); };
-  ws.onclose = () => {
+  ws.onclose = async () => {
     $("conn").classList.remove("on");
+    // 수락 전에 거부된 웹소켓은 브라우저에서 1006으로만 보이므로, REST로 인증 문제인지 확인한다
+    try {
+      const r = await fetch(withToken("/api/status"));
+      if (r.status === 401) { showAuthRequired(); return; }
+    } catch (_) {}
     setMode({ scanner: "offline" });
     const delay = Math.min(10000, 1000 * 2 ** state.retry++);
     setTimeout(connect, delay);
@@ -45,6 +67,14 @@ function connect() {
   };
 }
 setInterval(() => { if (state.ws && state.ws.readyState === 1) state.ws.send("ping"); }, 20000);
+
+function showAuthRequired() {
+  setMode({ scanner: "auth" });
+  $("threat").className = "threat medium";
+  $("threat-title").textContent = "접속 토큰이 필요합니다";
+  $("threat-sub").textContent = "터미널에 출력된 URL(…/?token=…)로 다시 접속하세요.";
+  $("device-rows").innerHTML = '<tr><td colspan="8" class="empty">인증 후 표시됩니다.</td></tr>';
+}
 
 // ---------------------------------------------------------------- 경보
 let audioCtx = null;
@@ -91,7 +121,11 @@ function setMode(status) {
   const el = $("mode");
   el.className = "badge";
   if (status.scanner === "offline") { el.textContent = "서버 연결 끊김"; el.classList.add("err"); return; }
-  if (status.error) { el.textContent = "스캐너 오류"; el.title = status.error; el.classList.add("err"); return; }
+  if (status.scanner === "auth") { el.textContent = "인증 필요"; el.classList.add("err"); return; }
+  if (status.error) {
+    el.textContent = status.error.startsWith("수신 없음") ? "수신 없음" : "스캐너 오류";
+    el.title = status.error; el.classList.add("err"); return;
+  }
   if (status.scanner === "simulate") { el.textContent = "시뮬레이션"; el.classList.add("sim"); }
   else if (status.scanner === "ble") { el.textContent = status.running ? "실시간 BLE 스캔" : "스캐너 시작 중"; el.classList.add("live"); }
   else { el.textContent = "스캔 꺼짐"; }
@@ -209,6 +243,10 @@ function renderTable(s) {
 function renderDrawer() {
   const d = state.snap && state.snap.devices.find((x) => x.id === state.selected);
   const body = $("drawer-body");
+  if (state.selected === "*") {
+    body.innerHTML = `<h3>신호 폭주</h3><p class="muted">짧은 시간에 의심 기기 경보가 한꺼번에 쏟아졌습니다. 무작위 주소로 가짜 광고를 뿌리는 스푸핑 도구(예: 가짜 AirPods 팝업)나 여러 기기 반입을 의심할 수 있습니다. 1분 동안 개별 경보는 묶어서 생략하며, 기기 목록에서는 계속 보입니다.</p>`;
+    return;
+  }
   if (!d) { body.innerHTML = `<h3>기기 신호 끊김</h3><p class="muted">${esc(state.selected)} 기기가 ${state.snap ? state.snap.status.ttl : 30}초 이상 보이지 않습니다.</p>`; return; }
   body.innerHTML = `
     <div class="chip ${d.is_target ? "target" : ""}">${CAT_ICON[d.category] || ""} ${esc(d.category_label)} · ${LEVEL_TEXT[d.level]} ${d.score}</div>
@@ -363,14 +401,32 @@ $("drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") clo
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
 async function api(method, path) {
-  const r = await fetch(path, { method });
+  const r = await fetch(path, { method, headers: { "X-AvissGuard-Token": TOKEN } });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-document.addEventListener("click", async (e) => {
+// 표가 1초마다 다시 그려져 click(누름+뗌)이 끊길 수 있으므로 허용 버튼은 pointerdown으로 처리
+document.addEventListener("pointerdown", async (e) => {
   const allow = e.target.closest("[data-allow]");
-  if (allow) { e.stopPropagation(); await api("POST", "/api/whitelist/" + encodeURIComponent(allow.dataset.allow)); return; }
+  if (!allow || e.button !== 0) return;
+  e.preventDefault();
+  allow.disabled = true;
+  await api("POST", "/api/whitelist/" + encodeURIComponent(allow.dataset.allow));
+  loadWhitelist();
+});
+document.addEventListener("keydown", async (e) => {
+  const allow = e.target.closest && e.target.closest("[data-allow]");
+  if (allow && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    await api("POST", "/api/whitelist/" + encodeURIComponent(allow.dataset.allow));
+    loadWhitelist();
+  }
+});
+document.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-allow]")) return;
+  const unallow = e.target.closest("[data-unallow]");
+  if (unallow) { await api("DELETE", "/api/whitelist/" + encodeURIComponent(unallow.dataset.unallow)); loadWhitelist(); return; }
   const row = e.target.closest("tr[data-id], .alerts li[data-id]");
   if (row) openDrawer(row.dataset.id);
 });
@@ -402,6 +458,17 @@ document.querySelectorAll(".seg-btn").forEach((b) => (b.onclick = () => {
 }));
 $("search").addEventListener("input", (e) => { state.query = e.target.value; render(); });
 
+async function loadWhitelist() {
+  let list = [];
+  try { list = await api("GET", "/api/whitelist"); } catch (_) { return; }
+  const ul = $("whitelist");
+  $("wl-count").textContent = `${list.length}개`;
+  ul.innerHTML = list.length
+    ? list.map((w) => `<li><span><b>${esc(w.label)}</b><small>${esc(w.key)} · ${fmtTime(w.created)}</small></span><button class="btn small" data-unallow="${esc(w.key)}">해제</button></li>`).join("")
+    : '<li class="empty">허용한 기기가 없습니다. 감독관 휴대폰 등은 기기 목록의 \'허용\'을 누르세요.</li>';
+}
+$("btn-export").addEventListener("click", (e) => { e.currentTarget.href = withToken("/api/export.csv"); });
+
 // ---------------------------------------------------------------- 유틸
 const pad = (n) => String(n).padStart(2, "0");
 function hms(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
@@ -415,3 +482,4 @@ function fmtDur(sec) {
 setInterval(() => { $("clock").textContent = hms(new Date()); }, 1000);
 
 connect();
+loadWhitelist();

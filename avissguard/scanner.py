@@ -22,11 +22,15 @@ class BleScanner:
 
     kind = "ble"
 
-    def __init__(self, on_observation: ObservationHandler, adapter: str | None = None) -> None:
+    def __init__(
+        self, on_observation: ObservationHandler, adapter: str | None = None, watchdog: float = 45.0
+    ) -> None:
         self.on_observation = on_observation
         self.adapter = adapter
+        self.watchdog = watchdog
         self.error: str | None = None
         self.running = False
+        self.last_packet = 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
         try:
@@ -37,6 +41,9 @@ class BleScanner:
             return
 
         def _cb(device, adv) -> None:  # noqa: ANN001 - bleak 타입
+            self.last_packet = time.time()
+            if self.error and self.error.startswith("수신 없음"):
+                self.error = None
             rssi = adv.rssi if adv.rssi is not None else getattr(device, "rssi", -100)
             self.on_observation(
                 Observation(
@@ -58,10 +65,24 @@ class BleScanner:
             try:
                 scanner = BleakScanner(**kwargs)
                 await scanner.start()
-                self.running, self.error = True, None
+                self.running = True
+                if not (self.error or "").startswith("수신 없음"):
+                    self.error = None  # 시작 실패 오류는 지우고, 수신 없음 경고는 패킷이 올 때 지운다
+                self.last_packet = time.time()
                 log.info("BLE 스캔 시작")
                 try:
-                    await stop.wait()
+                    # 워치독: 스캔 중 어댑터가 꺼져도 bleak은 예외를 내지 않는 경우가 있어,
+                    # 일정 시간 패킷이 없으면 오류를 표시하고 스캐너를 다시 시작한다
+                    while not stop.is_set():
+                        try:
+                            await asyncio.wait_for(stop.wait(), timeout=5)
+                        except asyncio.TimeoutError:
+                            pass
+                        idle = time.time() - self.last_packet
+                        if idle > self.watchdog:
+                            self.error = f"수신 없음: {int(idle)}초간 BLE 패킷이 없어 스캐너를 재시작합니다 (블루투스 꺼짐?)"
+                            log.warning(self.error)
+                            break
                 finally:
                     await scanner.stop()
                     self.running = False

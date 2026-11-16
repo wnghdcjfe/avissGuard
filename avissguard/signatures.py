@@ -158,8 +158,12 @@ class SignatureDB:
         matched = [r for r in self.rules if r.matches(obs, apple)]
         result.matched_rules = [r.id for r in matched]
         if matched:
-            best_rank = max(CONFIDENCE_RANK.get(r.confidence, 0) for r in matched)
-            best = next(r for r in matched if CONFIDENCE_RANK.get(r.confidence, 0) == best_rank)
+            # 신뢰도가 같으면 의심 종류(카메라·안경·이어폰)를 우선, 그다음은 규칙 순서
+            def rank(r: Rule) -> tuple[int, int]:
+                return (CONFIDENCE_RANK.get(r.confidence, 0), int(r.category in TARGET_CATEGORIES))
+
+            best_rank = max(rank(r) for r in matched)
+            best = next(r for r in matched if rank(r) == best_rank)
             result.category = best.category
             result.label = result.model if (result.model and best.id == "apple-proximity-pairing") else best.label
             result.confidence = best.confidence

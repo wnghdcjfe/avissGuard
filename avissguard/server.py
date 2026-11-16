@@ -8,12 +8,14 @@ import csv
 import io
 import json
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +28,8 @@ from .tracker import DeviceTracker
 log = logging.getLogger("avissguard.server")
 
 STATIC_DIR = Path(str(resources.files("avissguard").joinpath("static")))
+TOKEN_HEADER = "X-AvissGuard-Token"
+SEND_TIMEOUT = 2.0
 
 
 class Hub:
@@ -36,6 +40,7 @@ class Hub:
         self.clients: set[WebSocket] = set()
         self.pending_alerts: list[dict] = []
         self.scanner_kind = scanner_kind
+        self.loop_error: str | None = None
         if scanner_kind == "simulate":
             self.scanner = SimulatedScanner(self.on_observation)
         elif scanner_kind == "ble":
@@ -45,7 +50,11 @@ class Hub:
         self.stop = asyncio.Event()
 
     def on_observation(self, obs) -> None:  # noqa: ANN001
-        alert = self.tracker.ingest(obs)
+        try:
+            alert = self.tracker.ingest(obs)
+        except Exception:  # 패킷 하나 때문에 스캐너 콜백이 죽지 않도록
+            log.exception("패킷 처리 실패: %s", getattr(obs, "address", "?"))
+            return
         if alert:
             log.warning(alert["message"])
             self.pending_alerts.append(alert)
@@ -55,31 +64,46 @@ class Hub:
             "version": __version__,
             "scanner": self.scanner_kind,
             "running": bool(self.scanner and self.scanner.running),
-            "error": self.scanner.error if self.scanner else None,
+            "error": (self.scanner.error if self.scanner else None) or self.loop_error,
             "signatures": len(self.tracker.db.rules),
             "ttl": self.tracker.ttl,
             "near_rssi": self.tracker.near_rssi,
         }
 
-    def payload(self) -> dict:
+    def snapshot(self) -> dict:
         snap = self.tracker.snapshot()
         snap["status"] = self.status()
-        snap["new_alerts"], self.pending_alerts = self.pending_alerts, []
         return snap
+
+    async def _send(self, ws: WebSocket, data: str) -> None:
+        try:
+            await asyncio.wait_for(ws.send_text(data), timeout=SEND_TIMEOUT)
+        except Exception:
+            # 느리거나 끊긴 클라이언트는 떼어내서 다른 대시보드를 막지 않게 한다
+            self.clients.discard(ws)
+            with contextlib.suppress(Exception):
+                await ws.close()
+
+    async def broadcast_once(self, tick: int) -> None:
+        snap = self.snapshot()
+        snap["new_alerts"], self.pending_alerts = self.pending_alerts, []
+        data = json.dumps({"type": "snapshot", **snap}, ensure_ascii=False)
+        if self.clients:
+            await asyncio.gather(*(self._send(ws, data) for ws in list(self.clients)))
+        if tick % 5 == 0:
+            self.tracker.flush()
+            self.tracker.prune()
 
     async def broadcast_loop(self) -> None:
         tick = 0
         while not self.stop.is_set():
             tick += 1
-            data = json.dumps({"type": "snapshot", **self.payload()}, ensure_ascii=False)
-            for ws in list(self.clients):
-                try:
-                    await ws.send_text(data)
-                except Exception:
-                    self.clients.discard(ws)
-            if tick % 5 == 0:
-                self.tracker.flush()
-                self.tracker.prune()
+            try:
+                await self.broadcast_once(tick)
+                self.loop_error = None
+            except Exception as exc:  # DB 잠김 등: 루프는 계속 돌리고 화면에 오류 표시
+                self.loop_error = f"내부 오류: {type(exc).__name__}: {exc}"
+                log.exception("브로드캐스트 실패")
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=1.0)
             except asyncio.TimeoutError:
@@ -95,11 +119,23 @@ def create_app(
     near_rssi: int = -60,
     min_rssi: int = -100,
     adapter: str | None = None,
+    token: str | None = None,
 ) -> FastAPI:
+    """token이 None이면 실행할 때마다 임의 토큰을 만든다 (app.state.token)."""
     db = SignatureDB.load(signatures_path)
     store = Store(db_path)
     tracker = DeviceTracker(db, store, ttl=ttl, near_rssi=near_rssi, min_rssi=min_rssi)
     hub = Hub(tracker, scanner, adapter=adapter)
+    token = token or secrets.token_urlsafe(16)
+
+    def token_ok(value: str | None) -> bool:
+        return bool(value) and secrets.compare_digest(value, token)
+
+    async def require_token(request: Request) -> None:
+        # 다른 사이트의 페이지나 같은 네트워크의 다른 사람이 기준선·허용 목록을 조작하지 못하도록
+        supplied = request.headers.get(TOKEN_HEADER) or request.query_params.get("token")
+        if not token_ok(supplied):
+            raise HTTPException(401, "토큰이 필요합니다. 터미널에 표시된 URL로 접속하세요.")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -111,70 +147,76 @@ def create_app(
         finally:
             hub.stop.set()
             for t in tasks:
-                with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                try:
                     await asyncio.wait_for(t, timeout=5)
-            tracker.flush()
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                except Exception:
+                    log.exception("종료 중 작업 오류")
+            with contextlib.suppress(Exception):
+                tracker.flush()
             store.close()
 
     app = FastAPI(title="AvissGuard", version=__version__, lifespan=lifespan)
     app.state.hub = hub
+    app.state.token = token
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @app.get("/api/status")
+    api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+
+    @api.get("/status")
     async def get_status() -> dict:
         return hub.status()
 
-    @app.get("/api/snapshot")
+    @api.get("/snapshot")
     async def get_snapshot() -> dict:
-        snap = tracker.snapshot()
-        snap["status"] = hub.status()
-        return snap
+        return hub.snapshot()
 
-    @app.get("/api/alerts")
+    @api.get("/alerts")
     async def get_alerts(limit: int = 100) -> list[dict]:
         return store.recent_alerts(min(max(limit, 1), 1000))
 
-    @app.post("/api/alerts/ack")
+    @api.post("/alerts/ack")
     async def ack_alerts(alert_id: int | None = None) -> dict:
         store.acknowledge(alert_id)
         return {"ok": True}
 
-    @app.get("/api/history")
+    @api.get("/history")
     async def get_history(limit: int = 500) -> list[dict]:
         return store.device_history(min(max(limit, 1), 5000))
 
-    @app.post("/api/baseline")
+    @api.post("/baseline")
     async def set_baseline() -> dict:
         n = tracker.set_baseline()
         return {"ok": True, "size": n, "set_at": tracker.baseline_at}
 
-    @app.delete("/api/baseline")
+    @api.delete("/baseline")
     async def clear_baseline() -> dict:
         tracker.clear_baseline()
         return {"ok": True}
 
-    @app.get("/api/whitelist")
+    @api.get("/whitelist")
     async def get_whitelist() -> list[dict]:
         return store.whitelist_entries()
 
-    @app.post("/api/whitelist/{device_id:path}")
+    @api.post("/whitelist/{device_id:path}")
     async def add_whitelist(device_id: str) -> dict:
         key = tracker.whitelist_device(device_id)
         if key is None:
             raise HTTPException(404, "기기를 찾을 수 없습니다")
         return {"ok": True, "key": key}
 
-    @app.delete("/api/whitelist/{key:path}")
+    @api.delete("/whitelist/{key:path}")
     async def remove_whitelist(key: str) -> dict:
         tracker.unwhitelist(key)
         return {"ok": True}
 
-    @app.get("/api/signatures")
+    @api.get("/signatures")
     async def get_signatures() -> dict:
         return {
             "version": db.version,
@@ -184,7 +226,7 @@ def create_app(
             ],
         }
 
-    @app.get("/api/export.csv")
+    @api.get("/export.csv")
     async def export_csv() -> Response:
         tracker.flush()
         buf = io.StringIO()
@@ -207,14 +249,24 @@ def create_app(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    app.include_router(api)
+
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
+        origin = ws.headers.get("origin")
+        host = ws.headers.get("host", "")
+        if origin and urlsplit(origin).netloc != host:
+            await ws.close(code=4403)
+            return
+        if not token_ok(ws.query_params.get("token")):
+            await ws.close(code=4401)
+            return
         await ws.accept()
-        hub.clients.add(ws)
         try:
-            await ws.send_text(json.dumps(
-                {"type": "hello", "alerts": store.recent_alerts(100), **hub.payload()}, ensure_ascii=False
-            ))
+            # hello는 대기 중인 경보 큐를 비우지 않는다 (다른 대시보드도 받아야 하므로)
+            hello = {"type": "hello", "alerts": store.recent_alerts(100), "new_alerts": [], **hub.snapshot()}
+            await ws.send_text(json.dumps(hello, ensure_ascii=False))
+            hub.clients.add(ws)
             while True:
                 await ws.receive_text()  # 클라이언트 핑 유지용
         except WebSocketDisconnect:

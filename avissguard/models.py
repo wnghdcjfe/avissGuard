@@ -45,7 +45,9 @@ class Observation:
         self.service_uuids = sorted({normalize_uuid(u) for u in self.service_uuids})
         self.service_data = {normalize_uuid(k): v for k, v in self.service_data.items()}
         if self.name is not None:
-            self.name = self.name.strip() or None
+            # 깨진 유니코드(짝 없는 서로게이트 등)가 JSON/DB 인코딩을 망가뜨리지 않도록 정리
+            clean = self.name.encode("utf-8", "replace").decode("utf-8").replace("\x00", "")
+            self.name = clean.strip()[:64] or None
 
     @property
     def all_service_uuids(self) -> set[str]:

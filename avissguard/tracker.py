@@ -10,25 +10,19 @@ from dataclasses import dataclass, field
 
 from .models import Observation, short_uuid
 from .risk import LEVEL_ORDER, estimate_distance, score_device
-from .signatures import CATEGORY_LABELS, TARGET_CATEGORIES, Classification, SignatureDB
+from .signatures import CATEGORY_LABELS, CONFIDENCE_RANK, TARGET_CATEGORIES, Classification, SignatureDB
 from .store import Store
 
 
 def fingerprint(obs: Observation, cls: Classification) -> str | None:
     """주소가 바뀌어도(MAC 랜덤화) 같은 기기로 볼 수 있는 특징값.
 
-    이름이나 모델처럼 기기를 구분할 정보가 없으면 None (주소로만 식별).
+    시간이 지나며 누적되는 제조사 ID·서비스 UUID는 넣지 않는다(값이 바뀌면 매칭이 끊김).
+    이름이 없으면 None — 모델 번호만으로는 같은 모델의 다른 기기와 구분할 수 없다.
     """
-    if not obs.name and not cls.model:
+    if not obs.name:
         return None
-    raw = "|".join(
-        [
-            obs.name or "",
-            cls.model or "",
-            ",".join(str(c) for c in sorted(obs.manufacturer_data)),
-            ",".join(sorted(obs.all_service_uuids)),
-        ]
-    )
+    raw = f"{obs.name}|{cls.model or ''}"
     return "fp:" + hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -104,6 +98,9 @@ class DeviceTracker:
         forget_after: float = 600.0,
         near_rssi: int = -60,
         min_rssi: int = -100,
+        alert_cooldown: float = 300.0,
+        storm_limit: int = 15,
+        max_devices: int = 3000,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -113,6 +110,12 @@ class DeviceTracker:
         self.near_rssi = near_rssi
         self.min_rssi = min_rssi
         self.clock = clock
+        self.alert_cooldown = alert_cooldown
+        self.storm_limit = storm_limit
+        self.max_devices = max_devices
+        self._alert_memory: dict[str, tuple[int, float]] = {}
+        self._recent_alerts: deque[float] = deque()
+        self._storm_at = float("-inf")
         self.devices: dict[str, TrackedDevice] = {}
         self.baseline_ids: set[str] = set()
         self.baseline_fps: set[str] = set()
@@ -166,8 +169,14 @@ class DeviceTracker:
             service_uuids=dev.service_uuids,
         )
         new_cls = self.db.classify(merged)
-        # 신뢰도가 낮은 패킷(예: 이름 없는 광고)으로 이미 확인된 분류를 덮어쓰지 않는다
-        if not (dev.classification.is_target and not new_cls.is_target and dev.classification.confidence):
+        # 이미 의심 기기로 분류됐다면, 그보다 신뢰도가 낮은 비의심 분류로는 덮어쓰지 않는다
+        old = dev.classification
+        keep_old = (
+            old.is_target
+            and not new_cls.is_target
+            and CONFIDENCE_RANK.get(new_cls.confidence, 0) < CONFIDENCE_RANK.get(old.confidence, 0)
+        )
+        if not keep_old:
             dev.classification = new_cls
         dev.fingerprint = fingerprint(merged, dev.classification) or dev.fingerprint
 
@@ -175,11 +184,21 @@ class DeviceTracker:
         self._dirty.add(dev.id)
         return self._maybe_alert(dev, now)
 
+    @staticmethod
+    def _matches(dev: TrackedDevice, ids: set[str], fps: set[str]) -> bool:
+        """허용 목록·기준선 매칭.
+
+        의심 종류(카메라·안경·이어폰)는 주소로만 매칭한다. 'Galaxy Buds2 Pro' 같은 기본 이름은
+        같은 모델이면 모두 같아서, 지문으로 매칭하면 감독관 이어폰 하나를 허용할 때 응시자의 같은
+        모델까지 함께 숨겨지기 때문이다. 대신 주소가 바뀌면(약 15분) 다시 탐지될 수 있다.
+        """
+        if dev.id in ids:
+            return True
+        return bool(dev.fingerprint) and not dev.classification.is_target and dev.fingerprint in fps
+
     def _rescore(self, dev: TrackedDevice, now: float) -> None:
-        dev.whitelisted = dev.id in self.whitelist or (dev.fingerprint in self.whitelist if dev.fingerprint else False)
-        dev.in_baseline = dev.id in self.baseline_ids or (
-            dev.fingerprint is not None and dev.fingerprint in self.baseline_fps
-        )
+        dev.whitelisted = self._matches(dev, self.whitelist, self.whitelist)
+        dev.in_baseline = self._matches(dev, self.baseline_ids, self.baseline_fps)
         res = score_device(
             dev.classification,
             dev.rssi,
@@ -198,6 +217,30 @@ class DeviceTracker:
         if LEVEL_ORDER[dev.level] <= prev:
             return None
         dev.alerted_level = dev.level
+
+        # 같은 기기(주소가 바뀌어도 이름이 같으면)는 쿨다운 동안 같은 등급으로 다시 알리지 않는다
+        rank = LEVEL_ORDER[dev.level]
+        key = dev.fingerprint or dev.id
+        remembered = self._alert_memory.get(key)
+        if remembered and now - remembered[1] < self.alert_cooldown and rank <= remembered[0]:
+            return None
+        self._alert_memory[key] = (rank, now)
+
+        # 무작위 주소로 가짜 광고를 뿌리는 공격(예: 가짜 AirPods 팝업)에 경보가 폭주하지 않게 한다
+        while self._recent_alerts and now - self._recent_alerts[0] > 60:
+            self._recent_alerts.popleft()
+        if len(self._recent_alerts) >= self.storm_limit:
+            if now - self._storm_at < 60:
+                return None
+            self._storm_at = now
+            return self._emit({
+                "ts": now, "device_id": "*", "name": None, "category": "unknown", "label": "신호 폭주",
+                "level": "high", "score": 100, "rssi": int(dev.rssi), "distance": dev.distance,
+                "message": f"경보: 1분 사이 경보 {self.storm_limit}건 초과 — BLE 스푸핑 또는 다수 기기 반입 의심. "
+                           "1분간 개별 경보를 묶어서 생략합니다.",
+            })
+        self._recent_alerts.append(now)
+
         c = dev.classification
         who = dev.name or c.model or "이름 없음"
         msg = f"{'경보' if dev.level == 'high' else '주의'}: {c.label} 탐지 — {who}, 약 {dev.distance}m (RSSI {int(dev.rssi)}dBm)"
@@ -213,6 +256,9 @@ class DeviceTracker:
             "distance": dev.distance,
             "message": msg,
         }
+        return self._emit(alert)
+
+    def _emit(self, alert: dict) -> dict:
         alert["id"] = self.store.add_alert(alert)
         alert["acknowledged"] = 0
         return alert
@@ -226,6 +272,11 @@ class DeviceTracker:
         now = self.clock() if now is None else now
         for key in [k for k, d in self.devices.items() if now - d.last_seen > self.forget_after]:
             del self.devices[key]
+        if len(self.devices) > self.max_devices:  # 무작위 주소 폭주 대비 상한
+            for d in sorted(self.devices.values(), key=lambda x: x.last_seen)[: len(self.devices) - self.max_devices]:
+                del self.devices[d.id]
+        for key in [k for k, (_, ts) in self._alert_memory.items() if now - ts > self.alert_cooldown]:
+            del self._alert_memory[key]
 
     def flush(self) -> None:
         """변경된 기기 정보를 DB에 기록한다."""
@@ -258,8 +309,9 @@ class DeviceTracker:
         dev = self.devices.get(device_id)
         if dev is None:
             return None
-        key = dev.fingerprint or dev.id
-        label = dev.name or dev.classification.label
+        # 의심 종류는 주소로만 허용한다 (같은 모델 전체가 숨겨지는 것을 막기 위해, _matches 참고)
+        key = dev.id if dev.classification.is_target or not dev.fingerprint else dev.fingerprint
+        label = f"{dev.name or dev.classification.model or '이름 없음'} · {dev.classification.label}"
         self.store.add_whitelist(key, label, self.clock())
         self.whitelist.add(key)
         self._rescore(dev, self.clock())
