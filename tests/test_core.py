@@ -312,3 +312,50 @@ def test_csv_export_neutralizes_formulas(tmp_path):
         text = client.get("/api/export.csv").text
         assert "'=HYPERLINK" in text
         assert ",=HYPERLINK" not in text
+
+
+IPHONE = {0x004C: bytes([0x10, 0x05, 0x01, 0x18, 0x44, 0x1A, 0x2B])}
+
+
+def test_nameless_phone_address_rotation_inherits_baseline(db):
+    t0 = 1000.0
+    tr, clock = make_tracker(db, t0)
+    tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="OLD", ts=t0))
+    clock["t"] = t0 + 1
+    tr.set_baseline()
+    # 기존 주소는 신호를 멈추고, 같은 유형이 새 주소로 나타남
+    alerts = [tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="NEW", ts=t0 + 5 + i)) for i in range(20)]
+    assert not any(alerts)
+    assert tr.devices["NEW"].in_baseline
+    # 한 번 더 주소가 바뀌어도 이어 받는다
+    assert not tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="NEWER", ts=t0 + 40))
+    assert tr.devices["NEWER"].in_baseline
+
+
+def test_second_phone_still_alerts_after_grace(db):
+    """기준선 휴대폰이 아직 보이는 중에 나타난 다른 휴대폰은 이어 받지 않고 경보한다."""
+    t0 = 1000.0
+    tr, clock = make_tracker(db, t0)
+    tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="OLD", ts=t0))
+    clock["t"] = t0 + 1
+    tr.set_baseline()
+    alerts = []
+    for i in range(15):
+        tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="OLD", ts=t0 + 2 + i))
+        alerts.append(tr.ingest(obs(mfg=IPHONE, rssi=-65, addr="OTHER", ts=t0 + 2 + i)))
+    assert not tr.devices["OTHER"].in_baseline
+    assert any(a and a["device_id"] == "OTHER" for a in alerts)
+
+
+def test_rotation_inheritance_never_applies_to_targets(db):
+    t0 = 1000.0
+    tr, clock = make_tracker(db, t0)
+    tr.ingest(obs(mfg=airpods(), rssi=-65, addr="OLD", ts=t0))
+    clock["t"] = t0 + 1
+    tr.set_baseline()
+    assert tr.ingest(obs(mfg=airpods(), rssi=-65, addr="NEW", ts=t0 + 5))
+    assert not tr.devices["NEW"].in_baseline
+
+
+def test_new_airpods_models_labelled(db):
+    assert db.classify(obs(mfg=airpods(b"\x24\x20"))).model == "AirPods Pro 2 (USB-C)"

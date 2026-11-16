@@ -10,8 +10,28 @@ from dataclasses import dataclass, field
 
 from .models import Observation, short_uuid
 from .risk import LEVEL_ORDER, estimate_distance, score_device
-from .signatures import CATEGORY_LABELS, CONFIDENCE_RANK, TARGET_CATEGORIES, Classification, SignatureDB
+from .signatures import (
+    APPLE_COMPANY_ID,
+    CATEGORY_LABELS,
+    CONFIDENCE_RANK,
+    TARGET_CATEGORIES,
+    Classification,
+    SignatureDB,
+    parse_apple_continuity,
+)
+
+# 이름 없는 일반 기기(예: 가방 속 iPhone)는 주소가 바뀌는 순간 새 기기처럼 보인다.
+# 이 시간 동안은 경보를 미뤄서, 사라진 기준선 기기의 '주소 교체'인지 먼저 확인한다.
+NON_TARGET_ALERT_GRACE = 10.0
 from .store import Store
+
+
+def device_class(dev: "TrackedDevice") -> str:
+    """주소 교체 전후를 이어 붙일 때 쓰는 거친 기기 유형 (종류 + 제조사 + Apple 메시지 타입)."""
+    apple = ""
+    if APPLE_COMPANY_ID in dev.manufacturer_data:
+        apple = ",".join(f"{t:02x}" for t in sorted(parse_apple_continuity(dev.manufacturer_data[APPLE_COMPANY_ID])))
+    return f"{dev.classification.category}|{','.join(map(str, dev.company_ids))}|{apple}"
 
 
 def fingerprint(obs: Observation, cls: Classification) -> str | None:
@@ -119,6 +139,8 @@ class DeviceTracker:
         self.devices: dict[str, TrackedDevice] = {}
         self.baseline_ids: set[str] = set()
         self.baseline_fps: set[str] = set()
+        self.baseline_classes: dict[str, str] = {}  # 기준선 기기 id → device_class
+        self._inherited: set[str] = set()  # 이미 주소 교체로 이어 받은 기준선 id
         self.baseline_at: float | None = None
         self.whitelist: set[str] = self.store.whitelist_keys()
         self.started_at = clock()
@@ -196,9 +218,31 @@ class DeviceTracker:
             return True
         return bool(dev.fingerprint) and not dev.classification.is_target and dev.fingerprint in fps
 
+    def _inherit_baseline(self, dev: TrackedDevice) -> bool:
+        """이름 없는 일반 기기가, 그 직전에 사라진 같은 유형의 기준선 기기를 이어 받는지 판단한다.
+
+        iPhone 등은 약 15분마다 주소를 바꾸므로, 기준선 기기가 신호를 멈춘 뒤 같은 유형이
+        새 주소로 나타나면 같은 기기로 본다. 의심 종류(카메라·안경·이어폰)에는 적용하지 않는다.
+        기준선 기기 하나는 한 번만 이어 받을 수 있다.
+        """
+        if self.baseline_at is None or dev.classification.is_target or dev.fingerprint:
+            return False
+        cls = device_class(dev)
+        for bid, bcls in self.baseline_classes.items():
+            if bid in self._inherited or bid == dev.id or bcls != cls:
+                continue
+            old = self.devices.get(bid)
+            if old is not None and old.last_seen >= dev.first_seen:
+                continue  # 아직 함께 보이는 중이면 다른 기기다
+            self._inherited.add(bid)
+            self.baseline_ids.add(dev.id)
+            self.baseline_classes[dev.id] = cls  # 다음 주소 교체도 이어 받을 수 있게
+            return True
+        return False
+
     def _rescore(self, dev: TrackedDevice, now: float) -> None:
         dev.whitelisted = self._matches(dev, self.whitelist, self.whitelist)
-        dev.in_baseline = self._matches(dev, self.baseline_ids, self.baseline_fps)
+        dev.in_baseline = self._matches(dev, self.baseline_ids, self.baseline_fps) or self._inherit_baseline(dev)
         res = score_device(
             dev.classification,
             dev.rssi,
@@ -213,6 +257,13 @@ class DeviceTracker:
     def _maybe_alert(self, dev: TrackedDevice, now: float) -> dict | None:
         if dev.level == "low":
             return None
+        if (
+            self.baseline_at is not None
+            and not dev.classification.is_target
+            and not dev.fingerprint
+            and now - dev.first_seen < NON_TARGET_ALERT_GRACE
+        ):
+            return None  # 주소 교체 여부를 확인할 때까지 대기 (alerted_level은 그대로 두어 이후 다시 평가)
         prev = LEVEL_ORDER.get(dev.alerted_level, -1) if dev.alerted_level else -1
         if LEVEL_ORDER[dev.level] <= prev:
             return None
@@ -290,6 +341,8 @@ class DeviceTracker:
         act = self.active(now)
         self.baseline_ids = {d.id for d in act}
         self.baseline_fps = {d.fingerprint for d in act if d.fingerprint}
+        self.baseline_classes = {d.id: device_class(d) for d in act}
+        self._inherited = set()
         self.baseline_at = now
         for d in self.devices.values():
             self._rescore(d, now)
@@ -300,6 +353,8 @@ class DeviceTracker:
     def clear_baseline(self) -> None:
         self.baseline_ids.clear()
         self.baseline_fps.clear()
+        self.baseline_classes.clear()
+        self._inherited.clear()
         self.baseline_at = None
         now = self.clock()
         for d in self.devices.values():

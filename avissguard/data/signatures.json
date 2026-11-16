@@ -34,7 +34,11 @@
     "0920": "Beats Studio3",
     "1020": "Beats Flex",
     "1120": "Beats Studio Buds",
-    "1220": "Beats Fit Pro"
+    "1220": "Beats Fit Pro",
+    "1920": "AirPods 4",
+    "1b20": "AirPods 4 (ANC)",
+    "2420": "AirPods Pro 2 (USB-C)",
+    "1f20": "AirPods Max (USB-C)"
   },
   "rules": [
     {
