@@ -1,0 +1,304 @@
+{
+  "version": 1,
+  "_comment": "규칙은 위에서부터 평가되며, 신뢰도(high>medium>low)가 같으면 먼저 나온 규칙이 우선합니다. 한 규칙 안의 조건(name_regex, company_ids, service_uuids, apple_types)은 모두 만족해야 매칭됩니다. company_ids는 Bluetooth SIG Assigned Numbers 기준 10진수입니다.",
+  "vendors": {
+    "6": "Microsoft",
+    "76": "Apple",
+    "89": "Nordic Semiconductor",
+    "93": "Realtek",
+    "117": "Samsung",
+    "135": "Garmin",
+    "158": "Bose",
+    "224": "Google",
+    "301": "Sony",
+    "343": "Huami(Amazfit)",
+    "369": "Amazon",
+    "427": "Meta(Facebook)",
+    "637": "Huawei",
+    "741": "Espressif",
+    "911": "Xiaomi",
+    "1422": "Meta Platforms Technologies"
+  },
+  "apple_models": {
+    "0220": "AirPods (1세대)",
+    "0f20": "AirPods (2세대)",
+    "1320": "AirPods (3세대)",
+    "0e20": "AirPods Pro",
+    "1420": "AirPods Pro 2",
+    "0a20": "AirPods Max",
+    "0320": "Powerbeats3",
+    "0b20": "Powerbeats Pro",
+    "0c20": "Beats Solo Pro",
+    "0520": "BeatsX",
+    "0620": "Beats Solo3",
+    "0920": "Beats Studio3",
+    "1020": "Beats Flex",
+    "1120": "Beats Studio Buds",
+    "1220": "Beats Fit Pro"
+  },
+  "rules": [
+    {
+      "id": "glasses-meta-name",
+      "category": "glasses",
+      "label": "Meta 스마트안경 (Ray-Ban/Oakley Meta)",
+      "confidence": "high",
+      "name_regex": "(?i)ray-?ban|\\brb ?meta|oakley ?meta|meta ?(glasses|wayfarer|display)"
+    },
+    {
+      "id": "glasses-even-realities",
+      "category": "glasses",
+      "label": "Even Realities G1 (자막·텔레프롬프터 안경)",
+      "confidence": "high",
+      "name_regex": "(?i)^even[ _-]?g\\d|^g1_"
+    },
+    {
+      "id": "glasses-brand-name",
+      "category": "glasses",
+      "label": "스마트안경/AR 글래스",
+      "confidence": "high",
+      "name_regex": "(?i)xreal|nreal|rokid|rayneo|inmo|vuzix|viture|solos|halliday|mentra|spectacles|echo ?frames|bose ?(frames|tempo|alto|rondo|soprano)|huawei ?eyewear|eyewear|mijia ?glasses|smart ?glasses|ai ?glasses|lucyd|razer ?anzu|fauna|monocle|brilliant|스마트안경|안경"
+    },
+    {
+      "id": "glasses-frame-name",
+      "category": "glasses",
+      "label": "Brilliant Labs Frame (AI 안경) 추정",
+      "confidence": "medium",
+      "name_regex": "^Frame( |$|_)"
+    },
+    {
+      "id": "camera-spy-name",
+      "category": "camera",
+      "label": "초소형/히든 카메라",
+      "confidence": "high",
+      "name_regex": "(?i)spy ?cam|hidden ?cam|mini ?cam|micro ?cam|nanny ?cam|pinhole|hdwificam|wificam|v380|lookcam|yoosee|little ?stars|bvcam|ubox|camhi|icsee|몰래|초소형"
+    },
+    {
+      "id": "camera-wearable-name",
+      "category": "camera",
+      "label": "웨어러블/액션 카메라",
+      "confidence": "high",
+      "name_regex": "(?i)gopro|insta360|osmo|dji ?(action|pocket)|body ?cam|bodycam|pen ?cam|button ?cam|clip ?cam|narrative|akaso|sjcam"
+    },
+    {
+      "id": "camera-esp32-name",
+      "category": "camera",
+      "label": "ESP32-CAM 등 DIY 카메라 모듈",
+      "confidence": "high",
+      "name_regex": "(?i)esp32[-_ ]?cam|esp[-_ ]?eye|ov2640|ov5640"
+    },
+    {
+      "id": "camera-generic-name",
+      "category": "camera",
+      "label": "카메라 계열 이름",
+      "confidence": "medium",
+      "name_regex": "(?i)\\b(cam|camera|ipcam|ipc|dvr)\\b|cam[_-]?\\d|^a9[ _-]?|^x5[ _-]?|카메라"
+    },
+    {
+      "id": "earpiece-cheat-name",
+      "category": "earpiece",
+      "label": "커닝용 초소형 이어피스/넥루프 추정",
+      "confidence": "high",
+      "name_regex": "(?i)spy ?ear|nano ?ear|micro ?ear|mini ?ear|earpiece|invisible|magnet(ic)?|neck ?loop|induction|\\bnano\\b|커닝|무선 ?이어"
+    },
+    {
+      "id": "earpiece-brand-name",
+      "category": "earpiece",
+      "label": "무선 이어폰/헤드셋",
+      "confidence": "high",
+      "name_regex": "(?i)airpods|beats|powerbeats|galaxy ?buds|\\bbuds\\d?\\b|buds ?(pro|live|fe|\\+)|pixel ?buds|freebuds|redmi ?buds|oneplus ?buds|realme ?buds|nothing ?ear|\\bwf-|\\bwh-|\\bwi-|linkbuds|soundcore|liberty|qcy|haylou|jabra|\\bjbl\\b|sennheiser|momentum|bose|edifier|skullcandy|marshall|beoplay|tozo|earfun|earbud|ear ?pods|headset|headphone|hands-?free|이어폰|헤드셋"
+    },
+    {
+      "id": "earpiece-cheap-tws-name",
+      "category": "earpiece",
+      "label": "저가 TWS 이어폰 추정",
+      "confidence": "medium",
+      "name_regex": "(?i)\\btws\\b|^i\\d{1,2}s?( |$|-|_)|^f9( |$|-)|^m(10|19|28)( |$|-)|^air ?\\d{1,2}( |$)|^pro ?[3-6]( |$)|^lp\\d{1,3}|^xt\\d{1,3}|^j18|^a6s"
+    },
+    {
+      "id": "earpiece-bt-module-name",
+      "category": "earpiece",
+      "label": "범용 블루투스 모듈 (송수신기 개조 가능)",
+      "confidence": "low",
+      "name_regex": "(?i)^(bt|hc|jdy|ble|kt|ac|jl|bk)[-_ ]?\\d{1,4}\\b|^bluetooth( audio| speaker| music)?$|^ble[-_ ]|^at-|^mlt-bt"
+    },
+    {
+      "id": "apple-proximity-pairing",
+      "category": "earpiece",
+      "label": "AirPods/Beats (근접 페어링 신호)",
+      "confidence": "high",
+      "company_ids": [76],
+      "apple_types": [7]
+    },
+    {
+      "id": "apple-findmy",
+      "category": "tag",
+      "label": "Find My 신호 (AirTag 또는 주인과 떨어진 AirPods 등)",
+      "confidence": "medium",
+      "company_ids": [76],
+      "apple_types": [18]
+    },
+    {
+      "id": "apple-nearby",
+      "category": "phone",
+      "label": "Apple 기기 (iPhone/iPad/Watch/Mac)",
+      "confidence": "medium",
+      "company_ids": [76],
+      "apple_types": [16]
+    },
+    {
+      "id": "apple-ibeacon",
+      "category": "infra",
+      "label": "iBeacon (고정 비콘)",
+      "confidence": "low",
+      "company_ids": [76],
+      "apple_types": [2]
+    },
+    {
+      "id": "fastpair-audio",
+      "category": "earpiece",
+      "label": "Google Fast Pair 오디오 기기 (페어링 모드)",
+      "confidence": "medium",
+      "service_uuids": ["fe2c"]
+    },
+    {
+      "id": "le-audio",
+      "category": "earpiece",
+      "label": "LE Audio 오디오 기기",
+      "confidence": "medium",
+      "service_uuids": ["184e"]
+    },
+    {
+      "id": "le-audio-pacs",
+      "category": "earpiece",
+      "label": "LE Audio 오디오 기기",
+      "confidence": "medium",
+      "service_uuids": ["1850"]
+    },
+    {
+      "id": "meta-company",
+      "category": "glasses",
+      "label": "Meta 웨어러블 (Ray-Ban Meta 안경 가능성)",
+      "confidence": "medium",
+      "company_ids": [427]
+    },
+    {
+      "id": "meta-tech-company",
+      "category": "glasses",
+      "label": "Meta 웨어러블/헤드셋",
+      "confidence": "medium",
+      "company_ids": [1422]
+    },
+    {
+      "id": "bose-company",
+      "category": "earpiece",
+      "label": "Bose 오디오 기기",
+      "confidence": "medium",
+      "company_ids": [158]
+    },
+    {
+      "id": "espressif-company",
+      "category": "camera",
+      "label": "Espressif(ESP32) 칩 기기 — DIY 카메라/송신기 가능",
+      "confidence": "low",
+      "company_ids": [741]
+    },
+    {
+      "id": "realtek-company",
+      "category": "earpiece",
+      "label": "Realtek 오디오 칩 기기",
+      "confidence": "low",
+      "company_ids": [93]
+    },
+    {
+      "id": "sony-company",
+      "category": "earpiece",
+      "label": "Sony 기기 (이어폰 가능)",
+      "confidence": "low",
+      "company_ids": [301]
+    },
+    {
+      "id": "wearable-name",
+      "category": "wearable",
+      "label": "스마트워치/밴드",
+      "confidence": "high",
+      "name_regex": "(?i)watch|galaxy ?fit|mi ?band|smart ?band|amazfit|garmin|fitbit|whoop|huawei ?band|redmi ?band|forerunner|fenix|워치"
+    },
+    {
+      "id": "wearable-heartrate",
+      "category": "wearable",
+      "label": "심박 센서 웨어러블",
+      "confidence": "medium",
+      "service_uuids": ["180d"]
+    },
+    {
+      "id": "garmin-company",
+      "category": "wearable",
+      "label": "Garmin 웨어러블",
+      "confidence": "medium",
+      "company_ids": [135]
+    },
+    {
+      "id": "huami-company",
+      "category": "wearable",
+      "label": "Amazfit/Mi Band 웨어러블",
+      "confidence": "medium",
+      "company_ids": [343]
+    },
+    {
+      "id": "phone-name",
+      "category": "phone",
+      "label": "스마트폰/태블릿",
+      "confidence": "high",
+      "name_regex": "(?i)iphone|ipad|galaxy ?(s|z|a|note|tab)\\d*|\\bsm-[a-z]\\d|pixel ?\\d|xperia|redmi ?note|oneplus|휴대폰|핸드폰"
+    },
+    {
+      "id": "computer-name",
+      "category": "computer",
+      "label": "노트북/PC",
+      "confidence": "medium",
+      "name_regex": "(?i)macbook|imac|mac ?mini|thinkpad|surface|laptop|desktop|-pc\\b|\\bpc\\b|\\bgram\\b"
+    },
+    {
+      "id": "microsoft-company",
+      "category": "computer",
+      "label": "Windows 기기 (Swift Pair 등)",
+      "confidence": "low",
+      "company_ids": [6]
+    },
+    {
+      "id": "samsung-company",
+      "category": "phone",
+      "label": "Samsung 기기 (폰/버즈/워치 가능)",
+      "confidence": "low",
+      "company_ids": [117]
+    },
+    {
+      "id": "google-company",
+      "category": "phone",
+      "label": "Google 기기",
+      "confidence": "low",
+      "company_ids": [224]
+    },
+    {
+      "id": "huawei-company",
+      "category": "phone",
+      "label": "Huawei 기기",
+      "confidence": "low",
+      "company_ids": [637]
+    },
+    {
+      "id": "tag-name",
+      "category": "tag",
+      "label": "분실방지 태그",
+      "confidence": "medium",
+      "name_regex": "(?i)airtag|smarttag|\\btile\\b|chipolo|\\bnut\\b|\\bitag\\b"
+    },
+    {
+      "id": "eddystone",
+      "category": "infra",
+      "label": "Eddystone 비콘",
+      "confidence": "low",
+      "service_uuids": ["feaa"]
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AvissGuard 모니터</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230b1220' stroke='%2322d3ee' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%2322d3ee'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13" /><circle cx="16" cy="16" r="7" /><circle cx="16" cy="16" r="2.5" class="dot" /></svg>
+      <div>
+        <strong>AvissGuard</strong>
+        <span>시험장 블루투스 부정행위 기기 모니터</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="mode" class="badge">연결 중…</span>
+      <span id="conn" class="conn" title="서버 연결 상태"></span>
+      <span id="clock" class="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="threat" class="threat clear" aria-live="polite">
+      <div class="threat-icon" aria-hidden="true"></div>
+      <div class="threat-text">
+        <div id="threat-title" class="threat-title">이상 없음</div>
+        <div id="threat-sub" class="threat-sub">주변에서 의심 기기가 감지되지 않았습니다.</div>
+      </div>
+      <div class="controls">
+        <button id="btn-baseline" class="btn primary" title="지금 보이는 기기를 '원래 있던 기기'로 등록합니다. 응시자 입실 전에 누르세요.">기준선 설정</button>
+        <button id="btn-clear-baseline" class="btn" hidden>기준선 해제</button>
+        <button id="btn-ack" class="btn">경보 확인</button>
+        <a id="btn-export" class="btn" href="/api/export.csv">CSV 내보내기</a>
+        <button id="btn-sound" class="btn icon" aria-pressed="true" title="경보음 켜기/끄기">🔔</button>
+      </div>
+    </section>
+
+    <section class="kpis">
+      <div class="kpi"><span class="kpi-label">탐지 기기</span><span id="k-active" class="kpi-value">0</span><span id="k-packets" class="kpi-sub">패킷 0</span></div>
+      <div class="kpi danger"><span class="kpi-label">경보</span><span id="k-high" class="kpi-value">0</span><span class="kpi-sub">위험도 70+</span></div>
+      <div class="kpi warn"><span class="kpi-label">주의</span><span id="k-medium" class="kpi-value">0</span><span class="kpi-sub">위험도 40–69</span></div>
+      <div class="kpi cat"><span class="kpi-label">📷 카메라</span><span id="k-camera" class="kpi-value">0</span></div>
+      <div class="kpi cat"><span class="kpi-label">🎧 이어폰</span><span id="k-earpiece" class="kpi-value">0</span></div>
+      <div class="kpi cat"><span class="kpi-label">👓 스마트안경</span><span id="k-glasses" class="kpi-value">0</span></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel radar-panel">
+        <div class="panel-head">
+          <h2>근접 레이더</h2>
+          <span class="hint">중심 = 이 PC · 원 = 추정 거리 · 방향은 의미 없음</span>
+        </div>
+        <div class="radar-wrap"><canvas id="radar" aria-label="기기 근접 레이더"></canvas></div>
+        <div class="legend">
+          <span><i class="lv high"></i>경보</span><span><i class="lv medium"></i>주의</span><span><i class="lv low"></i>일반</span><span><i class="lv base"></i>기준선</span>
+        </div>
+      </div>
+      <div class="panel alerts-panel">
+        <div class="panel-head">
+          <h2>경보 기록</h2>
+          <span id="alert-count" class="hint">0건</span>
+        </div>
+        <ol id="alerts" class="alerts"><li class="empty">아직 경보가 없습니다.</li></ol>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>탐지 기기</h2>
+        <div class="table-tools">
+          <div class="seg" role="tablist">
+            <button class="seg-btn active" data-filter="suspect">의심 기기</button>
+            <button class="seg-btn" data-filter="all">전체</button>
+          </div>
+          <input id="search" type="search" placeholder="이름·제조사·ID 검색" />
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="devices">
+          <thead>
+            <tr><th>위험도</th><th>분류</th><th>기기</th><th class="num">RSSI</th><th class="num">거리</th><th>신호 추이</th><th>탐지 시간</th><th></th></tr>
+          </thead>
+          <tbody id="device-rows"><tr><td colspan="8" class="empty">스캔 중…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="foot">
+      BLE 광고 신호만 수동으로 수신합니다. 전파 차단·방해는 전파법 위반이므로 하지 않습니다.
+      Wi-Fi 전용 카메라나 클래식 블루투스만 쓰는 기기는 탐지되지 않을 수 있으니 육안·금속탐지 점검과 병행하세요.
+    </footer>
+  </main>
+
+  <aside id="drawer" class="drawer" hidden>
+    <div class="drawer-inner">
+      <button id="drawer-close" class="btn icon close" aria-label="닫기">✕</button>
+      <div id="drawer-body"></div>
+    </div>
+  </aside>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
